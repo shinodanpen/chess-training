@@ -288,9 +288,10 @@ function syncLayout() {
   var chatSection = document.querySelector('.chat-section');
   var chatHeader = document.querySelector('.chat-header');
   var chatFooter = document.querySelector('.chat-footer');
-  var chatMessages = document.querySelector('.chat-messages');
+  var analysisZone = document.querySelector('.analysis-zone');
+  var chatZone = document.querySelector('.chat-zone');
 
-  if (!mainPanel || !chatSection || !chatMessages) return;
+  if (!mainPanel || !chatSection || !chatZone) return;
 
   if (isStackedLayout()) {
     mainPanel.style.height = '';
@@ -306,13 +307,14 @@ function syncLayout() {
 
   var chatAvailableHeight = chatSection.clientHeight
     - (chatHeader ? chatHeader.offsetHeight : 0)
+    - (analysisZone ? analysisZone.offsetHeight : 0)
     - (chatFooter ? chatFooter.offsetHeight : 0);
 
-  chatMessages.style.height = Math.max(chatAvailableHeight, 0) + 'px';
-  chatMessages.style.maxHeight = Math.max(chatAvailableHeight, 0) + 'px';
-  chatMessages.style.overflowY = 'auto';
-  chatMessages.style.overflowX = 'hidden';
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  chatZone.style.height = Math.max(chatAvailableHeight, 0) + 'px';
+  chatZone.style.maxHeight = Math.max(chatAvailableHeight, 0) + 'px';
+  chatZone.style.overflowY = 'auto';
+  chatZone.style.overflowX = 'hidden';
+  chatZone.scrollTop = chatZone.scrollHeight;
 }
 
 function startGame(color) {
