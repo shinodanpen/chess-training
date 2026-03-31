@@ -96,6 +96,55 @@ def get_coach_comment(
     raise RuntimeError("get_coach_comment: empty response after 3 attempts")
 
 
+def get_chat_reply(
+    fen: str,
+    move_log: str,
+    coach_analysis: str,
+    chat_history: list,
+    message: str,
+) -> str:
+    """
+    Risposta del coach a una domanda libera del giocatore.
+    chat_history: lista di {role: 'user'|'coach', text: str} scambi precedenti.
+    Il contesto (FEN, move_log, coach_analysis) viene iniettato nel messaggio corrente.
+    Riprova fino a 3 volte se la risposta è vuota.
+    """
+    system_prompt = _load_prompt("chat_reply.txt")
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Append previous exchanges
+    role_map = {"user": "user", "coach": "assistant"}
+    for entry in chat_history:
+        role = role_map.get(entry.get("role", "user"), "user")
+        messages.append({"role": role, "content": entry.get("text", "")})
+
+    # Current message with context injected
+    context_parts = [f"FEN position: {fen}"]
+    if move_log:
+        context_parts.append(f"Move history: {move_log}")
+    if coach_analysis:
+        context_parts.append(f"Coach analysis of last turn: {coach_analysis}")
+    context_block = "\n".join(context_parts)
+    user_message = f"{context_block}\n\nPlayer: {message}"
+    messages.append({"role": "user", "content": user_message})
+
+    for attempt in range(3):
+        response = _get_client().chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=300,
+        )
+        result = response.choices[0].message.content
+        if result and result.strip():
+            return result.strip()
+        if attempt < 2:
+            time.sleep(0.5)
+
+    raise RuntimeError("get_chat_reply: empty response after 3 attempts")
+
+
 def get_hint_comment(fen: str, analysis: dict) -> str:
     """
     Suggerimento strategico senza rivelare la mossa esatta.
