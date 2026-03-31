@@ -674,15 +674,47 @@ document.getElementById('btn-new-game').addEventListener('click', startSetup);
 
 document.getElementById('btn-resign').addEventListener('click', resign);
 
-document.getElementById('btn-send').addEventListener('click', function() {
+document.getElementById('btn-send').addEventListener('click', async function() {
   var input = document.getElementById('chat-input');
   var text = input.value.trim();
-  if (!text) return;
-  addMessage(text, 'user');
+  if (!text || isThinking) return;
   input.value = '';
-  setTimeout(function() {
-    addMessage('Coming soon \u2014 free-form questions to the coach are on the way!', 'system');
-  }, 200);
+
+  addMessage(text, 'user');
+
+  isThinking = true;
+  toggleButtons(true);
+
+  try {
+    var res = await fetch(BACKEND + '/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fen: game.fen(),
+        move_log: game.history().join(' '),
+        coach_analysis: currentCoachAnalysis,
+        chat_history: currentTurnChatHistory,
+        message: text,
+      }),
+    });
+
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      addMessage('Error: ' + (err.detail || res.status), 'system');
+      return;
+    }
+
+    var data = await res.json();
+    addMessage(data.reply, 'coach');
+    currentTurnChatHistory.push({ role: 'user', text: text });
+    currentTurnChatHistory.push({ role: 'coach', text: data.reply });
+
+  } catch (err) {
+    addMessage('Cannot reach the server.', 'system');
+  } finally {
+    isThinking = false;
+    toggleButtons(false);
+  }
 });
 
 document.getElementById('chat-input').addEventListener('keydown', function(e) {
