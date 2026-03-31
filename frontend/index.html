@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chess Training</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Crimson+Pro:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="lib/chessboard.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== Setup Overlay ===== -->
+  <div id="setup-overlay" class="setup-overlay">
+    <div class="setup-card">
+      <div class="setup-emblem">&#9822;</div>
+      <h1 class="setup-title">Chess Training</h1>
+      <p class="setup-subtitle">Choose your color to begin</p>
+      <div class="color-choice">
+        <button class="color-btn color-white" data-color="white">
+          <span class="piece-symbol">&#9812;</span>
+          <span class="color-name">White</span>
+          <span class="color-note">Moves first</span>
+        </button>
+        <div class="choice-vs">vs</div>
+        <button class="color-btn color-black" data-color="black">
+          <span class="piece-symbol">&#9818;</span>
+          <span class="color-name">Black</span>
+          <span class="color-note">Responds to coach</span>
+        </button>
+      </div>
+
+      <div class="difficulty-section">
+        <div class="difficulty-header">Difficulty</div>
+        <div class="difficulty-display">
+          <span class="difficulty-value" id="diff-value">3</span>
+          <span class="difficulty-sep">·</span>
+          <span class="difficulty-name" id="diff-name">Beginner</span>
+        </div>
+        <input type="range" id="skill-slider" class="skill-slider" min="0" max="20" step="1" value="3">
+      </div>
+
+      <div class="appearance-section">
+        <div class="appearance-header">Appearance</div>
+        <div class="appearance-row">
+          <div class="appearance-label">Piece Set</div>
+          <div class="setup-piece-selector" id="setup-piece-grid"></div>
+        </div>
+        <div class="appearance-row">
+          <div class="appearance-label">Board Theme</div>
+          <div class="setup-theme-selector" id="setup-theme-row"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== Game Container ===== -->
+  <div id="game-container" class="game-container hidden">
+
+    <header class="app-header">
+      <div class="header-logo">
+        <span class="logo-icon">&#9822;</span>
+        <span class="logo-text">Chess Training</span>
+      </div>
+      <div class="header-controls">
+        <button id="btn-gear" class="btn-gear" title="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <!-- ===== Settings Panel ===== -->
+    <div id="settings-backdrop" class="settings-backdrop hidden"></div>
+    <div id="settings-panel" class="settings-panel hidden">
+      <div class="settings-header">
+        <span class="settings-title">Settings</span>
+        <button class="settings-close" id="btn-settings-close">&#10005;</button>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">Piece Set</div>
+        <div class="settings-piece-grid" id="settings-piece-grid"></div>
+      </div>
+      <div class="settings-section settings-section--last">
+        <div class="settings-label">Board Theme</div>
+        <div class="settings-theme-row" id="settings-theme-row"></div>
+      </div>
+    </div>
+
+    <main class="game-layout">
+
+      <div class="main-panel">
+
+        <section class="board-section">
+          <div class="board-frame">
+            <div id="board"></div>
+          </div>
+        </section>
+
+        <section class="chat-section">
+          <div class="chat-header">
+            <span class="chat-header-ornament">&#10022;</span>
+            <span>Coach</span>
+          </div>
+          <div id="analysis-zone" class="analysis-zone">
+            <p class="analysis-placeholder">Analysis will appear after your first move.</p>
+          </div>
+          <div id="chat-zone" class="chat-zone"></div>
+          <div class="chat-footer">
+            <div class="btns-row">
+              <button id="btn-undo" class="ctrl-btn ctrl-secondary" disabled>Undo</button>
+              <button id="btn-hint" class="ctrl-btn ctrl-primary">Hint</button>
+            </div>
+            <div class="chat-input-row">
+              <input type="text" id="chat-input" placeholder="Ask the coach a question...">
+              <button id="btn-send" class="ctrl-btn ctrl-primary">Send</button>
+            </div>
+            <div class="btns-row session-btns-row">
+              <button id="btn-new-game" class="ctrl-btn ctrl-secondary">New Game</button>
+              <button id="btn-resign"   class="ctrl-btn ctrl-danger">Resign</button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+    </main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <script src="lib/chessboard.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
