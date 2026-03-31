@@ -245,7 +245,7 @@ function startSetup() {
   document.getElementById('game-container').classList.add('hidden');
   closeSettings();
   game.reset();
-  document.getElementById('chat-messages').innerHTML = '';
+  resetChatState();
   refreshAllSelectors();
 }
 
@@ -324,7 +324,7 @@ function startGame(color) {
   document.getElementById('game-container').classList.remove('hidden');
 
   game.reset();
-  document.getElementById('chat-messages').innerHTML = '';
+  resetChatState();
   clearHighlights();
   selectedSquare = null;
 
@@ -403,7 +403,13 @@ async function executeMove(from, to) {
     var res = await fetch(BACKEND + '/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fen: preFen, move: uciMove, skill_level: getSkillLevel(), player_color: playerColor }),
+      body: JSON.stringify({
+        fen: preFen,
+        move: uciMove,
+        skill_level: getSkillLevel(),
+        player_color: playerColor,
+        move_log: game.history().join(' '),
+      }),
     });
 
     if (!res.ok) {
@@ -422,6 +428,10 @@ async function executeMove(from, to) {
       to: em.slice(2, 4),
       promotion: em[4] || 'q',
     });
+
+    currentCoachAnalysis = data.coach_comment;
+    currentTurnChatHistory = [];
+    document.getElementById('chat-zone').innerHTML = '';
 
     if (engineMove) {
       board.position(game.fen());
@@ -649,6 +659,8 @@ function undoLastTurn() {
   game.undo();
   game.undo();
   board.position(game.fen());
+  resetChatState();
+  syncLayout();
   toggleButtons(false);
 }
 
