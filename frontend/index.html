@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Crimson+Pro:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="lib/chessboard.css">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260415c">
 </head>
 <body>
 
@@ -17,23 +17,35 @@
     <div class="setup-card">
       <div class="setup-emblem">&#9822;</div>
       <h1 class="setup-title">Chess Training</h1>
-      <p class="setup-subtitle">Choose your color to begin</p>
+      <p id="setup-subtitle" class="setup-subtitle">Choose your color to begin</p>
+      <div class="setup-mode-row">
+        <button id="btn-setup-standard" class="setup-mode-btn active" type="button">Standard</button>
+        <button id="btn-setup-rapid" class="setup-mode-btn" type="button">Rapid</button>
+      </div>
       <div class="color-choice">
         <button class="color-btn color-white" data-color="white">
           <span class="piece-symbol">&#9812;</span>
           <span class="color-name">White</span>
-          <span class="color-note">Moves first</span>
+          <span id="setup-white-note" class="color-note">Moves first</span>
         </button>
         <div class="choice-vs">vs</div>
         <button class="color-btn color-black" data-color="black">
           <span class="piece-symbol">&#9818;</span>
           <span class="color-name">Black</span>
-          <span class="color-note">Responds to coach</span>
+          <span id="setup-black-note" class="color-note">Responds to coach</span>
         </button>
       </div>
 
+      <div class="scenario-entry">
+        <button id="btn-scenario-mode" class="scenario-entry-btn">
+          <span class="scenario-entry-title">Scenario / Review</span>
+          <span class="scenario-entry-copy">Build a custom position, validate it, then analyze it or play from there.</span>
+        </button>
+      </div>
+
+
       <div class="difficulty-section">
-        <div class="difficulty-header">Difficulty</div>
+        <div id="difficulty-header" class="difficulty-header">Difficulty</div>
         <div class="difficulty-display">
           <span class="difficulty-value" id="diff-value">3</span>
           <span class="difficulty-sep">·</span>
@@ -66,6 +78,10 @@
         <span class="logo-text">Chess Training</span>
       </div>
       <div class="header-controls">
+        <div id="status-indicator" class="status-indicator">
+          <div id="status-spinner" class="status-spinner"></div>
+          <span id="status-text" class="status-text">Ready</span>
+        </div>
         <button id="btn-gear" class="btn-gear" title="Settings">&#9881;</button>
       </div>
     </header>
@@ -102,20 +118,88 @@
             <span class="chat-header-ornament">&#10022;</span>
             <span>Coach</span>
           </div>
+          <div id="scenario-panel" class="scenario-panel hidden">
+            <div id="scenario-editor-view" class="scenario-view hidden">
+              <div class="scenario-section">
+                <div class="scenario-label">Scenario / Review</div>
+                <p class="scenario-copy">Place pieces on the board, set the side to move, then validate the position before using the coach.</p>
+              </div>
+              <div class="scenario-section">
+                <div class="scenario-label">Placement Tool</div>
+                <div id="scenario-piece-palette" class="scenario-piece-palette"></div>
+                <div class="scenario-tool-row">
+                  <button id="btn-scenario-erase" class="ctrl-btn ctrl-secondary">Erase</button>
+                </div>
+              </div>
+              <div class="scenario-section">
+                <div class="scenario-label">Position Options</div>
+                <div class="scenario-option-block">
+                  <div class="scenario-option-title">Side to Move</div>
+                  <div class="scenario-choice-row">
+                    <button id="btn-scenario-turn-white" class="scenario-choice-btn" data-side="white">White</button>
+                    <button id="btn-scenario-turn-black" class="scenario-choice-btn" data-side="black">Black</button>
+                  </div>
+                </div>
+                <div class="scenario-option-block">
+                  <div class="scenario-option-title">Player Color</div>
+                  <div class="scenario-choice-row">
+                    <button id="btn-scenario-player-white" class="scenario-choice-btn" data-color="white">White</button>
+                    <button id="btn-scenario-player-black" class="scenario-choice-btn" data-color="black">Black</button>
+                  </div>
+                </div>
+                <div class="scenario-option-block">
+                  <label class="scenario-option-title" for="scenario-elo-input">Opponent ELO</label>
+                  <input type="number" id="scenario-elo-input" min="800" max="2200" step="50" value="1200">
+                  <p class="scenario-help">This is mapped to an approximate engine strength, not a literal Elo rating.</p>
+                </div>
+              </div>
+              <div class="scenario-action-row">
+                <button id="btn-scenario-clear" class="ctrl-btn ctrl-secondary">Clear Board</button>
+                <button id="btn-scenario-reset" class="ctrl-btn ctrl-secondary">Reset to Start</button>
+              </div>
+              <div class="scenario-action-row">
+                <button id="btn-scenario-back" class="ctrl-btn ctrl-secondary">Back</button>
+                <button id="btn-scenario-validate" class="ctrl-btn ctrl-primary">Validate Scenario</button>
+              </div>
+              <p id="scenario-editor-status" class="scenario-status"></p>
+            </div>
+
+            <div id="scenario-ready-view" class="scenario-view hidden">
+              <div class="scenario-section">
+                <div class="scenario-label">Scenario Ready</div>
+                <p id="scenario-ready-summary" class="scenario-copy"></p>
+              </div>
+              <div class="scenario-action-row">
+                <button id="btn-scenario-edit" class="ctrl-btn ctrl-secondary">Edit Scenario</button>
+                <button id="btn-scenario-analyze" class="ctrl-btn ctrl-secondary">Analyze Position</button>
+                <button id="btn-scenario-play" class="ctrl-btn ctrl-primary">Play From Here</button>
+              </div>
+            </div>
+
+            <div id="scenario-pending-view" class="scenario-view hidden">
+              <div class="scenario-section">
+                <div class="scenario-label">Scenario Started</div>
+                <p id="scenario-pending-summary" class="scenario-copy"></p>
+              </div>
+              <div class="scenario-action-row">
+                <button id="btn-scenario-let-opponent-move" class="ctrl-btn ctrl-primary">Let Opponent Move</button>
+              </div>
+            </div>
+          </div>
           <div id="analysis-zone" class="analysis-zone">
             <p class="analysis-placeholder">Analysis will appear after your first move.</p>
           </div>
           <div id="chat-zone" class="chat-zone"></div>
-          <div class="chat-footer">
-            <div class="btns-row">
+          <div id="chat-footer" class="chat-footer">
+            <div id="game-tools-row" class="btns-row">
               <button id="btn-undo" class="ctrl-btn ctrl-secondary" disabled>Undo</button>
               <button id="btn-hint" class="ctrl-btn ctrl-primary">Hint</button>
             </div>
-            <div class="chat-input-row">
+            <div id="chat-input-row" class="chat-input-row">
               <input type="text" id="chat-input" placeholder="Ask the coach a question...">
               <button id="btn-send" class="ctrl-btn ctrl-primary">Send</button>
             </div>
-            <div class="btns-row session-btns-row">
+            <div id="session-btns-row" class="btns-row session-btns-row">
               <button id="btn-new-game" class="ctrl-btn ctrl-secondary">New Game</button>
               <button id="btn-resign"   class="ctrl-btn ctrl-danger">Resign</button>
             </div>
@@ -130,7 +214,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
   <script src="lib/chessboard.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=20260415c"></script>
 
 </body>
 </html>
