@@ -2,108 +2,217 @@
 
 ## Obiettivo
 Applicazione web per allenarsi agli scacchi con feedback in tempo reale da un coach AI.
-Il backend combina Stockfish (analisi engine) con Groq LLM (commenti in linguaggio naturale).
-Il frontend è vanilla HTML/CSS/JS, nessun build step.
+
+- Backend: FastAPI + Stockfish + Groq
+- Frontend: vanilla HTML/CSS/JS, nessun build step
+- Focus attuale: gameplay coaching, scenario/review mode, UX polish, affidabilita' del coach
+
+## Nota manutenzione documentazione
+Questa versione di `CLAUDE.md` e' stata consolidata da **Codex** il **2026-04-02**
+dopo hardening progressivo del coach (`structured outputs`, guardrail di legalita', sanity check tattico in chat)
+e prima del passaggio successivo verso un coach piu' engine-backed.
+
+Questo file privilegia:
+- stato corrente reale del codice
+- flussi operativi e gotcha non ovvi
+- backlog e problemi ancora aperti
+
+La timeline storica precedente e' stata compressa per evitare ridondanza.
 
 ---
 
 ## Struttura del progetto
 
-```
+```text
 chess-training/
-├── backend/
-│   ├── main.py               # Server FastAPI (porta 8000)
-│   ├── stockfish_bridge.py   # Comunicazione con Stockfish via python-chess
-│   ├── groq_client.py        # Chiamate a Groq API + conversione UCI→SAN
-│   ├── .env                  # Variabili d'ambiente (non in git)
-│   └── prompts/
-│       ├── coach_comment.txt # System prompt per commento post-mossa
-│       └── hint_comment.txt  # System prompt per suggerimento strategico
-├── frontend/
-│   ├── index.html            # Layout a due colonne
-│   ├── style.css             # Dark theme, responsive ≤800px
-│   ├── app.js                # Logica JS
-│   └── lib/
-│       ├── chessboard.js     # Scaricato da unpkg (patched per browser)
-│       └── chessboard.css    # Scaricato da unpkg
-├── venv/                     # Virtualenv Python
-├── .env.example              # Template variabili d'ambiente
-└── CLAUDE.md                 # This file (project context)
+|-- backend/
+|   |-- main.py
+|   |-- stockfish_bridge.py
+|   |-- groq_client.py
+|   `-- prompts/
+|       |-- coach_comment.txt
+|       |-- hint_comment.txt
+|       |-- chat_reply.txt
+|       `-- scenario_review.txt
+|-- frontend/
+|   |-- index.html
+|   |-- style.css
+|   |-- app.js
+|   `-- lib/
+|       |-- chessboard.js
+|       |-- chessboard.css
+|       `-- pieces/<setname>/*.svg
+|-- docs/
+|-- test-checklist.md
+`-- CLAUDE.md
 ```
-
----
 
 ## Come avviare
 
 ### Backend
 ```bash
 cd backend
-# First time only:
 python -m venv ../venv
-source ../venv/bin/activate   # Windows: ..\venv\Scripts\activate
+..\venv\Scripts\activate
 pip install fastapi uvicorn python-chess groq python-dotenv httpx
-# Every time:
-source ../venv/bin/activate   # Windows: ..\venv\Scripts\activate
 uvicorn main:app --reload
 ```
-Richiede `backend/.env` con `GROQ_API_KEY` e `STOCKFISH_PATH` compilati (vedi `.env.example`).
+
+Richiede `backend/.env` con:
+- `GROQ_API_KEY`
+- `STOCKFISH_PATH`
 
 ### Frontend
-Aprire `frontend/index.html` con Live Server (VS Code) su porta 5500,
-oppure: `python -m http.server 5500` dalla cartella `frontend/`.
-Il frontend si aspetta il backend su `http://localhost:8000`.
+Usare Live Server su porta `5500`, oppure:
+
+```bash
+cd frontend
+python -m http.server 5500
+```
+
+Backend atteso su `http://localhost:8000`.
+
+## Verifica rapida
+
+### Flusso standard
+1. Aprire setup overlay
+2. Scegliere White o Black
+3. Giocare una mossa
+4. Verificare risposta engine + analisi coach + chat + hint + undo
+
+### Flusso scenario
+1. Aprire `Scenario / Review`
+2. Costruire posizione custom
+3. Validare
+4. Verificare chat coach disponibile gia' in `scenario_ready`
+5. Verificare `Analyze Position` e `Play From Here`
 
 ---
 
 ## Backend
 
-### Dipendenze (venv)
+### Dipendenze
 `fastapi`, `uvicorn`, `python-chess`, `groq`, `python-dotenv`, `httpx`
 
 ### `stockfish_bridge.py`
-Apre/chiude Stockfish per ogni chiamata tramite `chess.engine` (UCI).
+Processo UCI aperto/chiuso per ogni chiamata tramite `python-chess`.
 
-| Funzione | Parametri | Comportamento |
+| Funzione | Parametri | Risultato |
 |---|---|---|
-| `get_best_move` | `fen, skill_level` | Risposta engine in UCI (`"e2e4"`) |
-| `analyze_position` | `fen` | `{score, best_move, depth}` — depth 20 |
-| `get_hint` | `fen` | `{score, best_move, depth}` — depth 20 |
+| `get_best_move` | `fen, skill_level` | mossa UCI |
+| `analyze_position` | `fen` | `{score, best_move, depth}` |
+| `analyze_position_rich` | `fen, depth?, multipv?, approved_score_loss_cp?` | analisi ricca con shortlist candidate + `position_profile` |
+| `get_hint` | `fen` | `{score, best_move, depth}` |
+| `is_chat_move_sane` | `fen, san, max_score_loss_cp?` | controllo tattico rapido su una mossa concreta suggerita in chat |
 
-`score`: `int` (centipawns) oppure `"mate N"`.
+Note:
+- `analyze_position()` e `get_hint()` usano depth 20
+- `score` e' `int` in centipawns oppure stringa `"mate N"`
+- `analyze_position_rich()` usa `MultiPV` (default 3) e produce:
+  - candidate moves con `score_loss_cp`
+  - approved move shortlist
+  - `facts`
+  - `position_profile`
+- `is_chat_move_sane()` usa una verifica piu' rapida (`depth 14`) e scarta mosse chat legali ma troppo inferiori alla migliore
+- soglia attuale chat sanity: circa `140 cp` di perdita massima tollerata rispetto alla best line
 
 ### `groq_client.py`
-Client Groq singleton. Modello: `gpt-oss-120b`.
-Le mosse vengono convertite da UCI a SAN prima di essere passate al prompt
-(helper `_uci_to_san`, con fallback alla stringa UCI in caso di eccezione).
-`best_move` viene convertito usando il FEN pre-mossa (corrisponde alla posizione in cui quella mossa è legale).
+Client Groq singleton.
+
+- modello attuale di default: `openai/gpt-oss-120b`
+- override possibili via env:
+  - `GROQ_MODEL`
+  - `GROQ_REASONING_EFFORT`
+- helper `_uci_to_san()` per conversione UCI -> SAN
+- hard cap server-side a 2 frasi per coach e scenario review
+- board snapshot testuale derivato dal FEN per ridurre allucinazioni su pezzi/case
+- structured outputs JSON in strict mode quando il modello lo supporta (`gpt-oss-20b`, `gpt-oss-120b`)
+- coach/hint/review rendono testo finale a partire da campi strutturati (`sentence_1`, `sentence_2`, ecc.)
+- `analysis` viene ora arricchita con `position_profile` deterministico lato backend
+- chat puo' nominare una mossa concreta solo se:
+  - e' dichiarata nel payload strutturato
+  - e' legale nella posizione
+  - appartiene alla approved shortlist dell'engine quando disponibile
+  - supera il sanity check tattico di Stockfish
+
+Funzioni principali:
 
 | Funzione | Scopo |
 |---|---|
-| `get_coach_comment(fen, player_move, analysis, engine_move, context, player_color)` | Commento post-mossa |
-| `get_hint_comment(fen, analysis)` | Suggerimento strategico (senza rivelare la mossa) |
+| `get_coach_comment(fen, final_fen, player_move, analysis, engine_move, player_color, move_log)` | commento sull'intero turno |
+| `get_chat_reply(fen, move_log, coach_analysis, chat_history, message)` | chat contestuale |
+| `get_hint_comment(fen, analysis)` | hint strategico |
+| `get_scenario_review(fen, analysis, player_color)` | review iniziale della posizione custom |
 
-### `main.py` — Endpoint API
-
-CORS: `localhost:3000`, `localhost:5173`, `127.0.0.1:5500`.
-`load_dotenv()` chiamato all'avvio prima di qualsiasi import che usa env vars.
+### Endpoint API (`backend/main.py`)
 
 | Endpoint | Body | Risposta |
 |---|---|---|
-| `GET /health` | — | `{"status":"ok"}` |
-| `POST /move` | `{fen, move, skill_level, player_color}` | `{engine_move, coach_comment, score}` |
+| `GET /health` | - | `{"status":"ok"}` |
+| `POST /move` | `{fen, move, skill_level, player_color, move_log}` | `{engine_move, coach_comment, score}` |
 | `POST /hint` | `{fen}` | `{hint}` |
+| `POST /chat` | `{fen, move_log, coach_analysis, chat_history, message}` | `{reply}` |
+| `POST /scenario/validate` | `{fen, player_color, opponent_elo}` | `{normalized_fen, skill_level, opponent_to_move}` |
+| `POST /scenario/analyze` | `{fen, player_color}` | `{coach_comment, score}` |
+| `POST /engine-move` | `{fen, skill_level}` | `{engine_move}` |
 
-`POST /move`: valida FEN → valida mossa UCI → verifica legalità → **analizza posizione pre-mossa** (depth 20, best_move = alternativa migliore per il bianco) → applica mossa → ottiene risposta engine → chiede commento a Groq con analisi pre-mossa.
+Comportamento chiave:
+- `/move` analizza la **posizione pre-mossa**
+- poi applica la mossa del giocatore
+- poi ottiene la risposta engine
+- poi costruisce anche il **final FEN** del turno completo
+- il coach riceve snapshot pre-mossa + snapshot finale
 
----
+### Prompt
 
-## Prompt LLM
+| File | Ruolo |
+|---|---|
+| `coach_comment.txt` | analisi post-turno, max 2 frasi |
+| `hint_comment.txt` | hint, max 2 frasi, no exact move |
+| `chat_reply.txt` | chat libera contestuale |
+| `scenario_review.txt` | review iniziale della posizione validata |
 
-### `coach_comment.txt`
-Player-aware: coach addresses the player as "you/your move" and the opponent by color. Max 3 sentences. No hollow praise. Explains strategic concepts concisely. Never reveals centipawns or the exact best move.
+Vincoli attuali importanti:
+- niente centipawns in output utente
+- niente best move esplicita
+- niente riferimenti a case/pezzi non presenti nei board snapshot forniti
+- `coach_comment`, `hint`, `scenario_review`: niente mosse concrete in output utente
+- `chat`: mosse concrete ammesse solo in casi controllati e validate lato backend
 
-### `hint_comment.txt`
-Max 2 sentences. Never reveals the exact move. Suggests strategic themes or board area.
+### Stato attuale del coach
+Pipeline attuale:
+1. backend valida FEN e legalita' delle mosse reali di gioco
+2. Stockfish produce analisi base (`score`, `best_move`)
+   - ora anche `analyze_position_rich()` con:
+     - candidate moves (`MultiPV`)
+     - approved move shortlist
+     - hanging/pinned piece facts
+     - `position_profile`
+3. Groq riceve:
+   - board snapshot
+   - legal move list
+   - engine candidate shortlist
+   - deterministic `position_profile`
+   - contesto turno / chat
+   - istruzioni per structured JSON
+4. backend valida il payload strutturato
+5. se la chat suggerisce una mossa concreta:
+   - check SAN parseable
+   - check legalita'
+   - check membership nella engine-approved shortlist
+   - check tattico rapido via Stockfish
+6. se qualcosa fallisce: fallback a guida strategica o fallback locale deterministic
+
+Questo ha migliorato:
+- niente mosse illegali o che attraversano pezzi
+- meno allucinazioni su case/pezzi
+- meno verbose drift dai reasoning models
+- piu' grounding posizionale di base (fase, sviluppo, king safety, pawn structure, loose/pinned pieces)
+
+Questo NON garantisce ancora:
+- vera comprensione posizionale
+- spiegazioni affidabili su tattiche sottili
+- suggerimenti concreti sempre forti solo perche' legali e non immediatamente perdenti
 
 ---
 
@@ -112,589 +221,305 @@ Max 2 sentences. Never reveals the exact move. Suggests strategic themes or boar
 ### Librerie
 | Libreria | Fonte | Note |
 |---|---|---|
-| jQuery 3.7.1 | cdnjs (CDN) | Richiesto da chessboard.js |
-| chess.js 0.10.3 | cdnjs (CDN) | Logica scacchiera, validazione mosse |
-| chessboard.js | `frontend/lib/` (locale) | Rendering drag & drop. CDN bloccata da ORB — vedi bug |
+| jQuery 3.7.1 | cdnjs | richiesta da chessboard.js |
+| chess.js 0.10.3 | cdnjs | logica partita |
+| chessboard.js | `frontend/lib/` | locale, patched |
 
-### Layout
-Setup overlay a schermo intero → scelta colore (bianco/nero) → game container.
-`.main-panel` a due colonne: scacchiera (sinistra, dimensione JS-driven) + chat 300px (destra).
-Breakpoint 860px: colonne si impilano. Dark theme (`#0c0c0f`), palette oro (`#c9a866`).
-Font: Cormorant Garamond (display) + Crimson Pro (body) via Google Fonts CDN.
-Messaggi chat: `coach` con bordino oro, `system` corsivo centrato, `user` bordino blu.
+### Layout generale
+- setup overlay iniziale
+- game container con board a sinistra e coach/chat a destra
+- chat panel diviso in:
+  - `#analysis-zone`: analisi dell'ultimo turno o review scenario
+  - `#chat-zone`: hint + chat libera
 
-### `app.js` — flusso
-- `startSetup()`: mostra overlay, resetta board/chat
-- `startGame(color)`: nasconde overlay, crea board con orientamento corretto, chiama `syncLayout()`
-- `engineFirstMove()`: se giocatore sceglie nero, engine apre con mossa random da `WHITE_OPENINGS`
-- `onDragStart`: blocca se engine sta pensando, partita finita, o pezzo avversario / turno avversario
-- `onDrop`: valida con chess.js → `POST /move` → `addCoachMessage(turnInfo)` → applica mossa engine
-- `addCoachMessage(text, turnInfo)`: bolla coach con header turno (numero + notazione bianco/nero)
-- Errore di rete: `game.undo()` + messaggio in chat
-- `undoLastTurn()`: `game.undo()` × 2, disabilitato se < 2 mosse in cronologia
-- `syncLayout()`: calcola dimensione board, imposta `#board` width, chiama `board.resize()`, allinea altezze `main-panel` e `chat-section` alla board reale renderizzata
-- `toggleButtons(disabled)`: disabilita tutti i bottoni durante le chiamate async
+### `frontend/app.js` — stato attuale
+State machine principale:
+- `setup`
+- `scenario_editor`
+- `scenario_ready`
+- `playing`
 
----
+Tipi di sessione:
+- `standard`
+- `scenario`
 
-## Fix (sessione 2026-03-28 — round 3)
+Capacita' chiave gia' implementate:
+- drag-and-drop + click-to-move insieme
+- highlight mosse legali
+- highlight ultima mossa (`from` + `to`)
+- undo di un turno completo
+- chat contestuale con cronologia per turno
+- hint
+- scelta difficulty standard
+- piece set / board theme persistiti in `localStorage`
 
-| Fix | Cosa |
-|---|---|
-| Prompt LLM in inglese | `coach_comment.txt` e `hint_comment.txt` riscritti interamente in inglese, max 2 frasi ciascuno |
-| `get_hint` depth | Portato da 10 a 20 per coerenza con `analyze_position` |
-| Modello LLM | Cambiato da `llama-3.1-8b-instant` a `gpt-oss-120b` in `groq_client.py` e `context.md` |
-| `max_tokens` hint | Portato da 200→400→600 in `get_hint_comment()` |
-| Log warning risposta vuota | `/move` e `/hint` loggano `[WARN]` se `coach_comment`/`hint` è vuoto/None |
-| Nessun try/except silenzioso | Confermato: entrambe le funzioni Groq propagano già le eccezioni; solo `_uci_to_san` ha fallback intenzionale |
+### Piece sets / themes
+Piece sets disponibili:
+- `cburnett` (default)
+- `staunty`
+- `merida`
+- `maestro`
+- `tatiana`
+- `california`
+- `riohacha`
 
----
+Board themes:
+- `classic`
+- `walnut`
+- `slate`
+- `midnight`
 
-## Fix (sessione 2026-03-28 — round 2)
-
-| Fix | Problema | Soluzione |
-|---|---|---|
-| Ordine operazioni POST /move | `analyze_position` veniva chiamato dopo il push → restituiva `best_move` del nero, non del bianco | Spostato prima di `board.push`: ora analizza la posizione pre-mossa |
-| Conversione SAN best_move in groq_client | Usava un board post-mossa per convertire una mossa della posizione pre-mossa | Ora usa direttamente `fen` (pre-mossa) |
-| Prompt coach_comment.txt | Tono troppo incoraggiante, frasi di maniera | Riscritto: tono asciutto, max 2–3 frasi, niente "ottima mossa!" |
-
----
-
-## Bug risolti (sessione 2026-03-28)
-
-| Bug | Causa | Fix |
-|---|---|---|
-| `ERR_BLOCKED_BY_ORB` su chessboard.js | Il path CDN `chessboard-1.0.0.min.js` non esiste nel pacchetto npm; CDN restituisce errore con MIME sbagliato | File scaricato localmente in `frontend/lib/` |
-| `module is not defined` | Bare `module.exports = ChessBoard` senza guard nel file scaricato | Patched localmente: guard + `window.ChessBoard = ChessBoard` |
-| `Chessboard is not defined` | Capitalizzazione errata in app.js (`Chessboard` vs `ChessBoard`) | Sed replace in app.js |
-| jQuery mancante | La versione del pacchetto npm richiede jQuery | Aggiunto jQuery 3.7.1 da cdnjs |
-| Notazione UCI nel coach_comment | `best_move` passato grezzo come "e6e5" | `groq_client.py` ora converte UCI→SAN via python-chess |
+Persistenza:
+- `localStorage['chessPieceSet']`
+- `localStorage['chessBoardTheme']`
+- `localStorage['chessSkillLevel']`
 
 ---
 
 ## Stato attuale
 
-**Backend e frontend funzionanti e testati end-to-end (2026-03-31).**
+### Standard mode
+Flusso verificato manualmente:
+- setup overlay
+- scelta White/Black
+- orientamento board corretto
+- mossa giocatore
+- risposta engine
+- analisi coach
+- hint
+- chat libera
+- undo
+- new game / resign
 
-Flusso verificato: setup overlay → scelta colore → mossa giocatore → Stockfish risponde → coach commenta con bolla turno (notazione bianco/nero) → suggerimento funziona → undo funziona.
+### Scenario / Review Mode v1
+Implementata e testata manualmente il `2026-04-01`.
 
-## Prossimi passi
+Comportamento attuale:
+- entry point da setup overlay tramite `Scenario / Review`
+- editor parte da **board vuota**
+- piazzamento pezzi tramite palette
+- erase tool
+- clear board
+- reset to start
+- scelta:
+  - side to move
+  - player color
+  - opponent ELO
+- `Validate Scenario` obbligatorio prima di usare coach/play
+- dopo validazione: stato `scenario_ready`
+  - board validata resta caricata
+  - chat coach disponibile subito
+  - azioni:
+    - `Edit Scenario`
+    - `Analyze Position`
+    - `Play From Here`
+- se nello scenario muove prima l'avversario:
+  - appare `Let Opponent Move`
+  - viene richiesta una sola mossa engine
+  - l'analisi pre-play viene invalidata e rimossa
 
-- Rendere il tono del coach più progressivo/didattico per giocatori inesperti (prompt update)
-- Contextual chat with the coach (POST /chat endpoint — see Ideas backlog)
+Undo scenario:
+- disabilitato in `scenario_ready`
+- se esiste solo la prima mezza-mossa dell'avversario, undo torna allo stato validato
+- dopo un turno completo, undo riusa il comportamento standard
 
----
+ELO simulato:
+- range UI: `800`-`2200`
+- mapping backend: `clamp(round((elo - 800) / 70), 0, 20)`
 
-## Piece sets & board themes (sessione 2026-03-31)
-
-### Piece sets downloaded
-SVG files (12 per set: wK wQ wR wB wN wP bK bQ bR bB bN bP) saved to `frontend/lib/pieces/<setname>/`.
-Source: `https://raw.githubusercontent.com/lichess-org/lila/master/public/piece/<setname>/<piece>.svg`
-
-Sets available: **cburnett** (default), **staunty**, **merida**, **maestro**, **tatiana**, **california**, **riohacha** (all 7 verified 200 OK).
-
-pieceTheme path format: `lib/pieces/{setname}/{piece}.svg`
-
-### Board themes
-
-Four CSS themes defined in `style.css`, applied as a class on `#board`:
-
-| Class | Light square | Dark square |
-|---|---|---|
-| `.board-theme-classic` | `#f0d9b5` | `#b58863` (default, no override) |
-| `.board-theme-walnut` | `#dab882` | `#6b3a22` |
-| `.board-theme-slate` | `#adbbc4` | `#456070` |
-| `.board-theme-midnight` | `#3a4055` | `#1a1e2e` |
-
-Overrides chessboard.js square classes `.white-1e1d7` and `.black-3c85d`.
-
-### Settings panel
-
-- Gear button (`#btn-gear`, class `.btn-gear`) added to header top-right (inside `.header-controls`)
-- Clicking it toggles `#settings-panel` (position: fixed, top-right, z-index 200)
-- `#settings-backdrop` (full-screen invisible div, z-index 199) dismisses panel on click-outside
-- Panel contains: piece set buttons grid + board theme swatches with mini checkerboard previews
-
-### Setup overlay additions
-
-- New `.appearance-section` added below `.difficulty-section` in setup card
-- Contains `#setup-piece-grid` (piece set buttons) and `#setup-theme-row` (theme swatches)
-- `.setup-card` gets `max-height: 92vh; overflow-y: auto` to handle taller overlay content
-
-### State management
-
-- `localStorage['chessPieceSet']` — set name string, default `'cburnett'`
-- `localStorage['chessBoardTheme']` — theme name string, default `'classic'`
-- Read on page load; applied before board init
-
-### app.js refactor
-
-- `initBoard(fen, orientation)` extracted as shared board initializer
-  - destroys existing board, sets width, creates ChessBoard with current pieceTheme, applies board theme, calls syncLayout()
-  - used by `startGame()` and `setPieceSet()`
-- `getPieceSet()` / `getBoardTheme()` read from localStorage with defaults
-- `getPieceThemeUrl(setName)` returns `lib/pieces/<setname>/{piece}.svg`
-- `applyBoardTheme(themeName)` removes all `.board-theme-*` classes, adds new one
-- `setPieceSet(setName)` saves to localStorage, refreshes selectors, calls `initBoard()` mid-game preserving FEN + orientation
-- `setBoardTheme(themeName)` saves to localStorage, calls `applyBoardTheme()`, refreshes selectors
-- `buildSwatches(gridEl, rowEl)` builds piece-set buttons and theme swatch buttons for any container pair
-- `refreshAllSelectors()` rebuilds both the settings panel and setup overlay selectors
-- `openSettings()` / `closeSettings()` toggle panel + backdrop + gear active state
-- `setPlayerColor()` helper removed (logic absorbed into `initBoard()` + `startGame()`)
+### Test manuali confermati
+Confermati nel corso della sessione:
+- regressioni standard principali OK
+- scenario entry e scenario flows principali OK
+- palette scenario con SVG reali OK
+- coach meno incline a inventare case grazie ai board snapshot
+- subtext del bottone scenario corretto
 
 ---
 
-## Redesign UI (sessione 2026-03-29)
+## Problemi aperti / follow-up
 
-### Motivazione
-Interfaccia originale troppo prototipale. Redesign completo orientato a un look "chess club di alto livello" — scuro, raffinato, tipografia serif, nessun effetto da videogioco.
+### 1. Ridondanza `New Game` vs `Resign`
+Entrambi riportano al setup overlay.
 
-### Modifiche applicate
+Decisione di prodotto ancora aperta:
+- tenere entrambi ma differenziare il comportamento
+- oppure rimuoverne uno
 
-#### `frontend/index.html`
-- Aggiunto Google Fonts CDN: **Cormorant Garamond** (display) + **Crimson Pro** (body)
-- Nuovo **setup overlay** (`#setup-overlay`): schermata a tutto schermo con card centrata, due bottoni colore (bianco/nero) con `data-color`
-- Struttura game container (`#game-container`) con classe `hidden` / visibile
-- Header (`app-header`): logo sinistra + tre bottoni destra (`btn-new-game`, `btn-resign`, `btn-hint`)
-- Layout a due sezioni: `board-section` (flex: 1) + `chat-section` (360px fissi)
-- Rimosso bottone hint dal footer chat; rimosso btn-new-game dalla colonna board
+### 2. Affidabilita' residua del coach
+Situazione migliorata rispetto allo stato precedente grazie a:
+- cambio modello
+- structured outputs
+- fallback deterministico
+- board snapshot
+- final board snapshot nel commento post-turno
+- legal move grounding
+- gating tattico delle mosse concrete in chat
 
-#### `frontend/style.css`
-- Riscrittura completa. Palette: near-black base (`#0c0c0f`), oro caldo (`#c9a866`), crema (`#e8dfc8`)
-- Setup overlay con pattern scacchiera CSS molto sottile come sfondo
-- Animazioni: `fadeIn` + `slideUp` per la card, `msgIn` per i messaggi chat
-- Board frame: padding 14px + bordo oro + box-shadow profondi
-- Bottoni: `.ctrl-secondary`, `.ctrl-primary`, `.ctrl-danger` — flat, no border-radius, tono discreto
-- `#board width`: `clamp(300px, calc(100vw - 380px - 4rem - 28px), 560px)` — responsive automatico
-- Chat: `flex: 0 0 360px`, messaggi `coach` con bordino oro, `system` corsivo centrato, `user` bordino blu
-- Breakpoint 860px: layout verticale. Breakpoint 500px: color-choice impila verticalmente
+Pero' resta una dipendenza LLM:
+- il coach puo' ancora essere imperfetto
+- serve osservazione continua durante test reali
+- failure mode attuale principale: il coach puo' ancora proporre idee "plausibili" ma strategicamente o tatticamente inferiori se non passano per una shortlist engine-backed
 
-#### `frontend/app.js`
-- Aggiunto `playerColor` (`'white'` | `'black'`)
-- `startSetup()`: mostra overlay, nasconde game container, resetta board/chat
-- `startGame(color)`: nasconde overlay, crea board con `orientation: color`, avvia partita
-- `engineFirstMove()`: se giocatore sceglie nero, engine muove subito con apertura random da `WHITE_OPENINGS`
-- `resign()`: alias per `startSetup()`
-- `onDragStart` aggiornato: controlla `playerColor` e `game.turn()` — solo i propri pezzi nel proprio turno
-- `toggleButtons` esteso a includere `btn-resign`
-- Event listener aggiunto per `btn-resign` e `.color-btn` (click su scelta colore)
-- `addMessage` system: label rimossa (solo testo corsivo)
-- Avvio: `startSetup()` invece di `initBoard() + addMessage()`
-- Nessuna dipendenza dal backend per `engineFirstMove` (mossa locale da lista predefinita)
+### 3. Cap hard sull'area analisi
+Gia' mitigato:
+- truncation server-side
+- `analysis-zone` con `max-height` e scroll
 
-### Note
-- Il backend rimane invariato. `POST /move` funziona correttamente anche con giocatore nero:
-  il FEN inviato ha il turno del nero, e Stockfish risponde con la mossa del bianco.
-- Font caricati via CDN Google Fonts (richiede connessione internet).
+Da verificare ancora nel tempo:
+- che nessun output anomalo ricomprima la chat in modo sgradevole
 
+### 4. UX scenario v1 ancora minimale
+Mancano ancora:
+- FEN import
+- FEN export
+- PGN import con jump-to-move
+- save/load scenari
+- castling rights / en passant controls
 
-## Fix layout centrato (sessione 2026-03-29 — round 2)
-
-| Modifica | Prima | Dopo |
-|---|---|---|
-| .game-layout | nessun justify-content, si espandeva a tutta larghezza | justify-content: center + align-items: stretch, board+chat centrati come unita |
-| .board-section | flex: 1 + min-width: 0, occupava tutto lo spazio a sinistra | flex: none, dimensione determinata dal contenuto |
-| #board | clamp relativo al viewport | 480px fisso, breakpoint 860px gestisce il mobile |
-
-### Risultato visivo
-Board (480px) + chat (300px) = 780px di contenuto, centrati nella viewport. Nessuno spazio vuoto a sinistra della scacchiera. Header rimane full-width come barra di navigazione.
-
-
-## Fix layout height-driven / chess.com style (sessione 2026-03-29 — round 3)
-
-Obiettivo: board e chat stesso blocco compatto, altezza = viewport disponibile.
-
-Principio: la scacchiera si adatta all'altezza, non viceversa.
-
-Modifiche a frontend/style.css:
-
-| Selettore | Prima | Dopo |
-|---|---|---|
-| .board-section padding | 2.5rem 2rem | 1rem 1.5rem |
-| .board-frame | nessun height/aspect-ratio | height:100% + max-height:560px + aspect-ratio:1/1 + overflow:hidden |
-| #board | width:480px fisso | width:100% + height:100% (riempie board-frame) |
-| media 860px | nessun reset | .board-frame height:auto + max-height:none + #board height:auto |
-
-Comportamento risultante:
-- game-layout (flex:1) riempie tutta l'altezza sotto l'header
-- board-section (flex:none, align-items:stretch) si allunga alla stessa altezza di game-layout
-- board-frame (height:100%, max-height:560px, aspect-ratio:1/1) diventa un quadrato di lato = min(560px, altezza disponibile)
-- #board riempie il board-frame al 100%
-- chat-section (flex:0 0 300px, align-items:stretch) stessa altezza di board-section
-- Nessuno spazio vuoto verticale; centrato orizzontalmente da justify-content:center su game-layout
-- Mobile (<=860px): il layout torna width-driven con il breakpoint che reimposta height:auto
-
-
-## Backend i18n fix + JS-driven board sizing (sessione 2026-03-29 - round 4)
-
-### Backend: groq_client.py user message labels translated to English
-All user message field labels passed to Groq were in Italian. Translated to English:
-- Posizione FEN -> FEN position
-- Mossa del giocatore -> Player's move
-- Valutazione engine -> Engine evaluation
-- Mossa migliore secondo engine -> Engine best move
-- Contesto aggiuntivo -> Additional context
-
-Both prompts in backend/prompts/ were already fully in English.
-
-### Frontend: JS-driven board sizing (chess.com style)
-
-Problem: chessboard.js reads #board computed width via jQuery at init time.
-CSS-only approach (aspect-ratio + height:100%) was unreliable because chessboard.js
-does not respond to CSS changes without explicit board.resize() calls.
-
-Solution: calculate board size in JS and set #board style.width before init and on resize.
-
-#### New function in app.js: getBoardSize()
-- On mobile (<=860px): width-driven. boardSize = min(window.innerWidth - 32 - 28, 460)
-- On desktop: height-driven. boardSize = min(window.innerHeight - headerHeight - 32 - 28, 560)
-- 32 = board-section vertical/horizontal padding (2 * 1rem)
-- 28 = board-frame inner padding (2 * 14px)
-
-#### Changes to app.js
-- getBoardSize() added before startGame()
-- startGame() sets document.getElementById('board').style.width = boardSize + 'px' before ChessBoard init
-- resize listener: sets #board width then calls board.resize()
-
-#### Changes to style.css
-- .board-frame: removed height:100%, max-height:560px, aspect-ratio:1/1
-- #board: changed from width:100%; height:100% to display:block (width set by JS)
-- Media query 860px: removed .board-frame and #board overrides (JS handles sizing in both modes)
-
-
-## Unified main-panel layout (sessione 2026-03-30)
-
-### Obiettivo
-Board e chat appaiono come un unico blocco visivo (pannello diviso a due colonne),
-non due elementi separati.
-
-### Modifiche a frontend/index.html
-- Aggiunto wrapper <div class="main-panel"> che contiene .board-section e .chat-section
-- Rimosso #btn-hint dall'header
-- Aggiunto #btn-hint nella .chat-footer, sopra la riga input (con classe .hint-btn)
-
-### Modifiche a frontend/style.css
-- .game-layout: align-items cambiato da stretch a center (panel centrato verticalmente)
-- .main-panel aggiunto: display:flex, flex-direction:row, align-items:stretch,
-  border:1px solid var(--border-gold), box-shadow profondi, overflow:hidden
-- .board-frame: rimossi box-shadow e border-gold; nuovo border:1px solid var(--border-medium)
-  (il main-panel porta ora il bordo esterno prominente)
-- .hint-btn aggiunto: display:block, width:100%, margin-bottom:0.5rem, text-align:center
-- Media query 860px: aggiunto align-items:stretch su .game-layout, .main-panel {flex-direction:column}
-
-### Non modificato
-- app.js: nessuna modifica. toggleButtons usa ID (btn-hint), funziona indipendentemente dalla
-  posizione nel DOM. Event listener su #btn-hint funziona per lo stesso motivo.
-
-
-## Fix chat scroll (sessione 2026-03-30)
-
-CSS-only approaches (height chain, `height: 0` trick) were tried and abandoned — both fragile across browsers.
-
-**Final approach (implemented by Codex):** `syncLayout()` in `app.js` reads the real rendered board width via `getBoundingClientRect()` after `board.resize()`, then sets `main-panel` and `chat-section` to that exact height in px. `.chat-messages` (flex: 1, `overflow-y: auto`, `min-height: 0`) scrolls internally. No CSS height chain needed.
-
-
-## Fix board-height locked panel + chat self-scroll (sessione 2026-03-30 — round 2, Codex)
-
-### Autore
-Questa iterazione è stata implementata da **Codex**, non da Claude Code.
-La cronologia sopra resta invariata: questo blocco documenta semplicemente il passo successivo
-nella timeline del 2026-03-30.
-
-### Problema
-La chat risultava allineata all'altezza del pannello esterno, non all'altezza effettiva
-della scacchiera renderizzata. Inoltre, con `overflow-y: auto`, i messaggi potevano ancora
-far crescere il contenitore invece di scrollare internamente.
-
-### Strategia finale
-Usare la scacchiera renderizzata come unica sorgente di verità per l'altezza desktop:
-- `#board` riceve una larghezza calcolata via JS
-- `chessboard.js` la converte nel lato reale del quadrato
-- `main-panel` e `chat-section` vengono poi forzati a quella **altezza reale**
-- solo `.chat-messages` resta scrollabile
-
-### Modifiche a `frontend/app.js`
-- Aggiunta `isStackedLayout()` per distinguere desktop e mobile (`<= 860px`)
-- `getBoardSize()` aggiornato:
-  - desktop: limita la board sia in base all'altezza disponibile sia in base alla larghezza residua accanto alla chat
-  - mobile: mantiene un sizing prudente in funzione della viewport
-- Aggiunta `syncLayout()`:
-  - imposta la width richiesta di `#board`
-  - chiama `board.resize()`
-  - legge la width reale renderizzata con `getBoundingClientRect().width`
-  - imposta `main-panel` e `chat-section` alla stessa altezza della board su desktop
-  - calcola l'altezza disponibile per `.chat-messages` come:
-    `chatSection.clientHeight - chatHeader.offsetHeight - chatFooter.offsetHeight`
-  - forza `.chat-messages` a `overflowY = 'auto'`
-  - riallinea lo scroll in basso dopo ogni sync
-- `startGame()` ora inizializza la board e poi chiama `syncLayout()`
-- Il listener `resize` usa direttamente `syncLayout()`
-- `addMessage()` usa `requestAnimationFrame(...)` prima di fare `scrollTop = scrollHeight`,
-  così l'autoscroll avviene dopo il layout effettivo del nuovo messaggio
-
-### Modifiche a `frontend/style.css`
-- `.main-panel`: rimossi bordo superiore/inferiore per evitare che il pannello risultasse
-  più alto della board quando l'altezza viene fissata via JS
-- `.board-section`:
-  - `height: 100%`
-  - padding verticale rimosso (`padding: 0 1.5rem`)
-- `.board-frame`:
-  - `height: 100%`
-  - rimossi padding, background e border
-  - lasciato solo come wrapper di allineamento, senza aggiungere altezza extra
-- `.chat-section`: aggiunto `min-height: 0`
-- `.chat-messages`:
-  - confermato `overflow-y: auto`
-  - confermato `min-height: 0`
-  - aggiunto `overscroll-behavior: contain`
-- Media query `<= 860px`:
-  - `.board-section` torna a `height: auto`
-  - `.board-frame` torna a `height: auto`
-
-### Risultato
-- Su desktop, il pannello condiviso ha la stessa altezza della scacchiera reale
-- La chat non espande più il layout
-- Scrolla solo `.chat-messages`
-- È possibile risalire ai messaggi precedenti mantenendo l'autoscroll sui nuovi messaggi
-- Su mobile resta il layout impilato, con gestione separata dell'altezza chat
-
-
-## Sessione 2026-03-31 — bug fixes
-
-### Bug #1 — Backend crash on empty Groq response — FIXED
-`main.py`: wrapped `get_coach_comment` call in `try/except RuntimeError`.
-On failure: logs `[WARN /move] get_coach_comment failed: ...` and returns graceful fallback string to the frontend instead of crashing.
-
-### Bug #2 — Coach responses occasionally truncated — FIXED
-`groq_client.py`: raised `max_tokens` in `get_coach_comment` from 300 → 600.
-
-### Bug #3 — Coach does not know the player's color — FIXED
-Full-stack implementation of `player_color`:
-- `main.py`: added `player_color: str = "white"` to `MoveRequest`; passed `player_color=req.player_color` to `get_coach_comment`
-- `groq_client.py`: added `player_color` parameter; renamed FEN-derived locals to `mover_color`/`responder_color` to avoid shadowing; prepends `player_context` string to user message
-- `backend/prompts/coach_comment.txt`: fully rewritten — coach addresses player as "you"/"your move", refers to opponent by color, max 3 sentences, no hollow praise, explains strategic concepts
-- `frontend/app.js`: added `player_color: playerColor` to `POST /move` fetch body; added `board.flip()` in `startGame()` when playing black; added `setPlayerColor()` helper
-
-### Bug #4 — Turn number font hard to read — FIXED
-- `frontend/app.js`: split "Turn N" into two spans — `.coach-turn-word` ("Turn") and `.coach-turn-number` (the digit)
-- `frontend/style.css`: `.coach-turn-label` becomes a flex container; `.coach-turn-word` keeps Cormorant Garamond + letter-spacing (recedes as label); `.coach-turn-number` gets `font-size: 0.95rem`, `font-weight: 600`, `letter-spacing: 0`, brighter `--gold` (stands out as focal point)
-
-### Difficulty slider audit
-Confirmed that `skill_level` was already fully wired up in a prior session but not documented.
-`getSkillLevel()` reads from `localStorage['chessSkillLevel']`; passed as `skill_level: getSkillLevel()` in every `POST /move` call.
-Feature roadmap item #2 marked as done.
+### 5. Tono coach per principianti
+Il coach e' piu' stabile e grounded, ma si puo' ancora rendere:
+- piu' progressivo
+- piu' didattico
+- meno denso per utenti molto inesperti
 
 ---
 
-## Feature roadmap (pianificato 2026-03-30)
+## Prossime cose da fare
 
-### Batch 1 — Backend/logica, nessuna modifica UI
+### Priorita' alta
+- completare il resto del test checklist e correggere eventuali bug residui
+- decidere il destino UX di `New Game` / `Resign`
+- continuare a monitorare eventuali hallucinations del coach in partite piu' lunghe
+- consolidare il primo passaggio verso coach engine-backed gia' implementato:
+  - validare `position_profile` su partite reali
+  - rifinire plan hints e soglie
+  - controllare falsi positivi / negativi su shortlist chat
 
-#### 1. ~~Retry Groq su risposta vuota~~ ✓ DONE
-Implementato in `groq_client.py`: loop da 3 tentativi con sleep da 0.5s tra i tentativi.
-`main.py` gestisce anche il crash da `RuntimeError` con fallback graceful (vedi sessione 2026-03-31).
+### Priorita' media
+- aggiungere FEN import
+- aggiungere FEN export
+- aggiungere save/load scenario locale
+- migliorare tono coach per principianti
+- far derivare il testo del coach da facts strutturati invece che da impressioni libere del modello
+- aggiungere ulteriori feature posizionali al `position_profile` (`main_issue`, `urgency`, weak squares, space, ecc.)
 
-#### 2. ~~Livelli di difficoltà~~ ✓ DONE
-Slider 0–20 nel setup overlay. `getSkillLevel()` legge da `localStorage`.
-`skill_level: getSkillLevel()` è passato nel body di ogni `POST /move`. Confermato funzionante.
-Implementato nella sessione 2026-03-29 ma non documentato in CLAUDE.md fino al 2026-03-31.
-
-#### 3. Tono del coach più accessibile — PARZIALMENTE DONE
-Il prompt `coach_comment.txt` è stato riscritto nella sessione 2026-03-31 per:
-- Riferirsi al giocatore come "you"/"your move" e all'avversario per colore
-- Tono diretto ma accessibile, con spiegazione dei concetti strategici
-- Max 3 frasi, nessun incoraggiamento di maniera
-Rimane aperto: rendere il coach ancora più progressivo/didattico per giocatori inesperti.
-
-#### 4. ~~Undo — riporta indietro di un turno~~ ✓ DONE
-`undoLastTurn()` in `app.js`: `game.undo()` × 2 + `board.position(game.fen())`.
-Disabilitato se `game.history().length < 2` o durante chiamate async. Bottone `#btn-undo` presente.
-
-#### 5. ~~Analisi del turno completo (bianco + nero)~~ ✓ DONE
-Il coach riceve entrambe le mosse (giocatore + engine) in ogni commento.
-`POST /move` restituisce `engine_move`; `addCoachMessage` riceve `turnInfo` con entrambe le notazioni.
+### Priorita' futura
+- PGN import con jump-to-move
+- language setting globale (UI + coach output)
+- ELO-based player rating system
+- simulazione engine piu' debole ai bassi livelli
 
 ---
 
-### Batch 2 — UI e frontend (da fare con plugin frontend-design attivo)
-
-#### 6. ~~Rappresentazione grafica nella bolla del coach~~ ✓ DONE
-Implementato: `.coach-turn-header` con turno, notazione bianco/nero, divisore.
-Stile del numero turno migliorato nella sessione 2026-03-31 (vedi sotto).
-
-#### 7. ~~Traduzione UI in inglese~~ ✓ DONE (2026-03-29)
-
-All visible frontend text (buttons, placeholders, system messages, setup overlay) translated to English.
-
----
-
-### Ordine di implementazione aggiornato
-
-- ~~1. Retry Groq~~ ✓
-- ~~2. Livelli di difficoltà~~ ✓
-- 3. Tono coach più accessibile (ancora migliorabile)
-- ~~4. Undo~~ ✓
-- ~~5. Analisi turno completo~~ ✓
-- ~~6. Rappresentazione grafica bolla~~ ✓
-- ~~7. Traduzione UI in inglese~~ ✓
-
-
----
-
-## Ideas backlog
+## Backlog prodotto
 
 ### ELO-based player rating system
-Track the player's estimated ELO based on game results against Stockfish at different skill levels.
-- Stockfish has a known approximate ELO per skill level — use it as the opponent rating in the ELO formula
-- Save game results (win/loss/draw) and computed rating in localStorage
-- Only count games above a minimum move threshold as valid
-- Future option: let the player manually input their chess.com/lichess ELO as a starting point,
-  then let the system adjust automatically based on results
+Idea ancora valida:
+- stimare ELO del giocatore in base ai risultati
+- usare il rating approssimato dell'avversario/engine come riferimento
+- salvare dati in `localStorage`
 
+### Scenario mode v2 possibili estensioni
+- import FEN
+- export FEN
+- import PGN
+- save/load
+- controlli avanzati FEN
 
-### ~~Contextual chat with the coach~~ ✓ DONE (sessione 2026-03-31 — round 2)
-See "Coaching refactor" section below. POST /chat endpoint implemented with full context (FEN, move log, prior analysis, conversation history). Chat available from game start.
+### Language setting
+Supportare una preferenza lingua unica che copra:
+- UI
+- system messages
+- coach analysis
+- hint
+- chat libera
 
+### Coach engine-backed roadmap
+Direzione concordata il `2026-04-02`:
 
----
+Passo pragmatico immediato:
+- completato:
+  - `MultiPV` in `stockfish_bridge.py`
+  - shortlist di mosse approvate dall'engine
+  - candidate moves con delta di eval
+  - hanging pieces
+  - pinned pieces
+  - gating chat sulla shortlist approvata
+  - primo `position_profile` con:
+    - phase
+    - material
+    - development
+    - king safety
+    - pawn structure
+    - tactical flags
+    - plan hints deterministici
 
-## Bug / improvements found during testing (2026-03-30)
-
-### 1. ~~Backend crash on empty Groq response~~ — FIXED (2026-03-31)
-
-`main.py` now catches `RuntimeError` from `get_coach_comment` and returns a graceful fallback string.
-
-### 2. ~~Coach responses occasionally truncated~~ — FIXED (2026-03-31)
-
-`max_tokens` raised to 600 in `get_coach_comment`.
-
-### 3. ~~Coach does not know the player's color~~ — FIXED (2026-03-31)
-
-`player_color` passed through the full stack. Coach addresses player as "you/your move".
-
-### 4. ~~Turn number font hard to read~~ — FIXED (2026-03-31)
-
-"Turn N" split into two spans: `.coach-turn-word` (tracked Cormorant) + `.coach-turn-number` (larger, weight 600, no tracking, brighter gold).
-
-### 5. Stockfish level 3 still too strong for a ~200 ELO player
-
-No easy fix — Stockfish's floor is inherently around 1100 ELO. Low priority. Possible future approach: artificial blunders or move randomization at very low skill levels.
-
----
-
-## Click-to-move + drag-and-drop highlights (sessione 2026-03-31)
-
-Both input modes are active simultaneously at all times — no toggle.
-
-### Click-to-move (onSquareClick)
-
-- First click on own piece: selects it (`selectedSquare = square`), highlights it and its legal targets
-- Second click on a legal target square: calls `executeMove(selectedSquare, square)`
-- Second click on another own piece: switches selection (clears old highlights, selects new piece)
-- Second click on invalid square: deselects (`clearHighlights(); selectedSquare = null`)
-- `onSquareClick` registered in the ChessBoard config alongside `onDragStart`/`onDrop`
-
-### Drag-and-drop highlights
-
-- `onDragStart`: after all guard checks, calls `clearHighlights()` + `highlightSquare(source, 'highlight-selected')` + `highlightLegalMoves(source)`
-- `onSnapbackEnd` (new): calls `clearHighlights(); selectedSquare = null` when a dragged piece snaps back
-
-### Move execution refactor
-
-- `executeMove(from, to)` extracted from `onDrop`: starts with `clearHighlights(); selectedSquare = null`, then runs all move validation + fetch logic
-- `onDrop` now just calls `return executeMove(source, target)`
-
-### Highlight CSS classes (style.css)
-
-- `.highlight-selected`: gold tint background (`rgba(201,168,102,0.45)`)
-- `.highlight-move::after`: small centered dot (32% circle, rgba black)
-- `.highlight-capture::after`: ring via `box-shadow: inset 0 0 0 5px rgba(0,0,0,0.22)`
-
-### State reset points
-
-`clearHighlights()` and `selectedSquare = null` are called on:
-
-- Move executed (start of `executeMove`)
-- Snapback (in `onSnapbackEnd`)
-- Undo (`undoLastTurn`)
-- Game start (`startGame`)
+Passi successivi possibili:
+- phase-aware coaching (opening / middlegame / endgame)
+- tags strutturati tipo `main_issue`, `plan`, `urgency`, `king_safety`
+- eventuale tablebase in finale ridotto
+- piu' output deterministico e meno "free reasoning" nel testo finale
 
 ---
 
-## Dynamic piece symbols in coach headers + prompt rewrite (sessione 2026-03-31)
+## Gotcha importanti
 
-### `getPieceSymbol(san, color)` — `frontend/app.js`
-
-New helper added just above `addMessage`. Derives the correct Unicode chess symbol from a SAN string and a color string (`'white'` or `'black'`).
-
-- Reads the first character of `san`; if it's in `KQRBN` it's a piece letter, otherwise it's a pawn.
-- Returns from a two-color lookup table of Unicode symbols (♔♕♖♗♘♙ / ♚♛♜♝♞♟).
-- `addCoachMessage` now calls `getPieceSymbol(turnInfo.whiteMove, 'white')` and `getPieceSymbol(turnInfo.blackMove, 'black')` instead of hardcoded ♙/♟.
-
-### Prompt rewrites
-
-**`backend/prompts/coach_comment.txt`** — more concept-focused and didactic:
-
-- When the player's move was a mistake, the coach now explicitly names the strategic concept violated (e.g. "this cedes center control", "this leaves your king exposed").
-- When the move was strong, a brief acknowledgment is followed by a forward-looking plan or idea.
-- Added explicit instruction to suggest a concrete plan for the next few moves when relevant.
-- Added instruction to explain *why* something matters — not just what happened.
-
-**`backend/prompts/hint_comment.txt`** — more specific and actionable:
-
-- Added explicit instruction to name a piece that is poorly placed/inactive, or a weakness to target.
-- Replaced "point to a strategic theme or area" with "be specific and useful: a concrete nudge, not a vague observation".
+- `chessboard.js` locale e' patched; non sostituirlo alla cieca con una CDN
+- in scenario editor il board non e' draggable: il piazzamento e' click-to-place
+- il coach post-turno ragiona su:
+  - posizione pre-mossa
+  - mossa giocatore
+  - risposta engine
+  - snapshot finale del turno
+- la chat ora e' piu' strettamente filtrata del coach testuale:
+  - una mossa concreta puo' essere respinta anche se il testo sembra ragionevole
+  - il backend preferisce tornare a guida strategica piuttosto che mostrare una mossa tatticamente sospetta
+- chat e hint dipendono dal FEN corrente, non da uno stato server-side
+- scenario mode non conosce lo storico reale della posizione, solo la posizione corrente validata
 
 ---
 
-## Coaching refactor (sessione 2026-03-31 — round 2)
+## File chiave
 
-### Chat panel split
+- `backend/main.py`: endpoint FastAPI
+- `backend/groq_client.py`: logica Groq, truncation, board snapshot, review scenario
+- `backend/stockfish_bridge.py`: integrazione Stockfish
+- `frontend/app.js`: state machine app + standard/scenario flows
+- `frontend/style.css`: layout, analysis/chat split, scenario UI
+- `frontend/index.html`: setup overlay, game layout, scenario panel
+- `test-checklist.md`: checklist manuale di test
 
-`.chat-section` is now a flex column with two children between the header and footer:
+---
 
-| Zone | Element | Behaviour |
-|---|---|---|
-| Analysis zone | `#analysis-zone` `.analysis-zone` | `flex: 0 0 auto`; always fully visible; content replaced on every turn via `addCoachMessage()`; shows placeholder when empty |
-| Chat zone | `#chat-zone` `.chat-zone` | `flex: 1; min-height: 0; overflow-y: auto`; scrollable; accumulates hints, user messages, coach replies; cleared on every new analysis and on undo |
+## Changelog sintetico recente
 
-`#chat-messages` removed. `addMessage()` targets `#chat-zone`. `addCoachMessage()` targets `#analysis-zone` and replaces content (does not append). `syncLayout()` subtracts `analysisZone.offsetHeight` when computing chat-zone height.
+### 2026-04-01
+- scenario/review mode v1 implementata
+- black orientation fix
+- click-to-move fix
+- last-move highlights
+- coach fallback hardening
+- board snapshots per grounding LLM
+- palette scenario passata a SVG reali
+- `CLAUDE.md` consolidato e ripulito
 
-### Per-turn context model
+### 2026-04-02
+- backend spostato su `openai/gpt-oss-120b` di default
+- structured outputs JSON strict mode per coach/hint/chat/review
+- guardrail lato backend per legalita' delle mosse suggerite
+- sanity check tattico Stockfish per le mosse concrete in chat
+- implementato primo passaggio coach engine-backed:
+  - `MultiPV`
+  - approved move shortlist
+  - `position_profile`
+  - hanging/pinned piece facts
+  - grounding aggiuntivo per coach/hint/chat/review
 
-| Event | Analysis zone | Chat zone | `currentCoachAnalysis` | `currentTurnChatHistory` |
-|---|---|---|---|---|
-| `startGame()` / `startSetup()` | placeholder | clear | `""` | `[]` |
-| POST /move response | replace with analysis | clear | set | `[]` |
-| Hint response | unchanged | append coach message | unchanged | unchanged |
-| User sends message | unchanged | append user + coach reply | unchanged | append both on success |
-| `undoLastTurn()` | placeholder | clear | `""` | `[]` |
-
-`resetChatState()` helper encapsulates the reset. Called from `startSetup()`, `startGame()`, and `undoLastTurn()`.
-
-### New state vars (`app.js`)
-
-- `currentCoachAnalysis: string` — set on each POST /move response; cleared on undo/new game
-- `currentTurnChatHistory: Array<{role: 'user'|'coach', text: string}>` — cleared on new analysis and undo; passed to POST /chat
-
-### Chat available from game start
-
-The chat input is active as soon as a game starts (no longer gated on first move). POST /chat handles empty `coach_analysis` and empty `move_log` gracefully.
-
-### POST /move — updated
-
-`MoveRequest` now includes `move_log: str = ""`. Passed to `get_coach_comment()` and included in the Groq user message. `context` parameter removed from `get_coach_comment`. `max_tokens` lowered 600 → 180. Prompt: max 2 sentences, no follow-up.
-
-### POST /chat — new endpoint
-
-```
-POST /chat
-Body: { fen, move_log, coach_analysis, chat_history, message }
-Response: { reply }
-```
-
-`get_chat_reply()` in `groq_client.py`: appends previous `chat_history` entries (role `"coach"` → `"assistant"`), injects context (FEN, move_log, coach_analysis) into the current user message. System prompt: `backend/prompts/chat_reply.txt`. `max_tokens`: 300. Sync `def`, not async.
-
-### POST /hint — frontend change only
-
-`addMessage(data.hint, 'coach')` now routes to `#chat-zone` automatically (no code change needed beyond the `addMessage` target update).
+### 2026-03-31 e prima
+- chat contestuale `/chat`
+- split analysis/chat panel
+- piece sets e board themes
+- UI redesign
+- undo full-turn
+- coach player-aware
